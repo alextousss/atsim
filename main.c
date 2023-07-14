@@ -37,10 +37,10 @@ typedef struct QuadState {
 
 void qs_create(QuadState *qs) {
 
-        mat4  rot;
-        glm_euler((vec3){0.10f, 0.0f, 0.0f}, rot);
-        glm_mat4_quat(rot, qs->ori);
-//    glm_quatv(qs->ori, 10, (vec3) {0.0f, 1.0f, 1.0f});
+    mat4  rot;
+    glm_euler((vec3){0.10f, 0.0f, 0.0f}, rot);
+    glm_mat4_quat(rot, qs->ori);
+    //    glm_quatv(qs->ori, 10, (vec3) {0.0f, 1.0f, 1.0f});
     //glm_vec3((vec3) {0.0f, 0.0f, 1.0f}, qs->pos);
     //glm_vec3((vec3) {0.0f, 0.0f, 0.0f}, qs->vel);
     glm_vec3((vec3) {0.0f, 0.0f, 0.0f}, qs->rot);
@@ -87,7 +87,7 @@ QuadState qs_iterate(QuadState s, Forces f, QuadConstants c, double dt) {
     for(unsigned int i = 0; i < 4; i++) {
         nqs.ori[i] = s.ori[i] + dt/2*omega_times_ori[i];
     }
-   return nqs;
+    return nqs;
 }
 
 #define K_P 0.4f
@@ -109,8 +109,8 @@ void compute_commands(QuadState *nqs, QuadState *oqs, double dt, vec3 out) {
 
 void compute_moments(vec3 commands, vec3 moments) {
 
-//    for (unsigned int i = 0; i < 3; i++)
-//        commands[i] = sat(commands[i], -10, 10);
+    //    for (unsigned int i = 0; i < 3; i++)
+    //        commands[i] = sat(commands[i], -10, 10);
     vec4 motor_value;
     float command_h = 0.0f;
     motor_value[1] = ( -1 * commands[1]) + (1 * commands[0]) + (-1 * commands[2]) + command_h;
@@ -139,7 +139,7 @@ void compute_moments(vec3 commands, vec3 moments) {
             moments[j] += moment[j];
 
         //glmc_vec3_print(moment, stderr);
-       // printf("---------\n");
+        // printf("---------\n");
     }
 
 }
@@ -225,7 +225,7 @@ int main() {
 
     gnuplot_ctrl * h ;
     h = gnuplot_init() ;
-//    gnuplot_cmd(h, "set multiplot layout 2,1 rowsfirst");
+    //    gnuplot_cmd(h, "set multiplot layout 2,1 rowsfirst");
     gnuplot_plot_xy(h, X_s, Y1_s, SIM_LENGTH, "euler X") ;
     gnuplot_plot_xy(h, X_s, Y2_s, SIM_LENGTH, "euler Y") ;
     gnuplot_plot_xy(h, X_s, Y3_s, SIM_LENGTH, "cmd X") ;
