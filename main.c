@@ -4,6 +4,7 @@
 #include "gnuplot_i.h"
 
 
+double get_random() { return (double)rand() / (double)RAND_MAX; }
 double max(double a, double b) {
     return a < b ? b : a;
 }
@@ -31,30 +32,28 @@ typedef struct QuadState {
     //vec3 pos; // position
     //vec3 vel; // velocity
     vec3 rot; // rotation
+    vec3 rot_noised; // rotation
+    vec3 rot_filtered; // rotation
     versor ori; // orientation
+    vec4 motor_speed;
     //mat3 transform;
 } QuadState;
 
 void qs_create(QuadState *qs) {
 
-    mat4  rot;
-    glm_euler((vec3){0.10f, 0.0f, 0.0f}, rot);
-    glm_mat4_quat(rot, qs->ori);
-    //    glm_quatv(qs->ori, 10, (vec3) {0.0f, 1.0f, 1.0f});
-    //glm_vec3((vec3) {0.0f, 0.0f, 1.0f}, qs->pos);
-    //glm_vec3((vec3) {0.0f, 0.0f, 0.0f}, qs->vel);
+    glm_quatv(qs->ori, 0.10f, (vec3) {0.70f, 0.70f, 0.0f});
     glm_vec3((vec3) {0.0f, 0.0f, 0.0f}, qs->rot);
-    glm_vec3((vec3) {0.0f, 0.0f, 0.0f}, qs->rot);
-    glm_vec3((vec3) {0.0f, 0.0f, 0.0f}, qs->rot);
+    glm_vec3((vec3) {0.0f, 0.0f, 0.0f}, qs->rot_noised);
+    glm_vec3((vec4) {0.0f, 0.0f, 0.0f, 0.0f}, qs->motor_speed);
 }
 
 
 void qc_create(QuadConstants *qc) {
     mat3 temp_inertia;
     glm_mat3_copy((mat3) {
-            1200365.8235*10e-9, -10487.8454*10e-9, -44.8982*10e-9,
-            -10487.8454*10e-9, 1200365.8235*10e-9,-44.8982*10e-9,
-            -44.8982*10e-9,  -44.8982*10e-9, 2391285.2518*10e-9
+            1200365.8235e-9, -10487.8454e-9, -44.8982e-9,
+            -10487.8454e-9, 1200365.8235e-9,-44.8982e-9,
+            -44.8982e-9,  -44.8982e-9, 2391285.2518e-9
             },
             temp_inertia);
     glm_mat3_inv(temp_inertia, qc->inv_inertia_tensor);
@@ -62,7 +61,7 @@ void qc_create(QuadConstants *qc) {
 }
 
 
-QuadState qs_iterate(QuadState s, Forces f, QuadConstants c, double dt) {
+QuadState qs_iterate(QuadState s, Forces f, QuadConstants c, unsigned int idx, double dt) {
     QuadState nqs;
     // Calculating derivative of rotation
     // theta'' = I^-1*Moments in the local basis
@@ -87,36 +86,72 @@ QuadState qs_iterate(QuadState s, Forces f, QuadConstants c, double dt) {
     for(unsigned int i = 0; i < 4; i++) {
         nqs.ori[i] = s.ori[i] + dt/2*omega_times_ori[i];
     }
+    if(idx%10==0) {
+        const float beta = exp(-2.0f*3.14f*20.0f*dt); // filtrage passe-bas 200hz
+        for(int i = 0; i < 3 ; i++) {
+            nqs.rot_noised[i] = nqs.rot[i] + 0.06f*(get_random()-0.5f);
+            nqs.rot_filtered[i] = beta*s.rot_filtered[i] + (1.0f-beta)*nqs.rot_noised[i];
+        }
+    } else {
+        for(int i = 0; i < 3 ; i++) {
+            nqs.rot_noised[i] = s.rot_noised[i];
+            nqs.rot_filtered[i] = s.rot_filtered[i];
+        }
+    }
+
     return nqs;
 }
 
-#define K_P 0.4f
-#define K_D 0.04f
+
+float X_K_P = 0.7f;
+float X_K_D = 1.0f;
+float K_P = 0.22f;
+float K_D = 0.0012f;
+#define LATENCY 15 // 30ms
 void compute_commands(QuadState *nqs, QuadState *oqs, double dt, vec3 out) {
-    mat4 orientation;
+    for(int i = 0; i < 3; i++) {
+        out[i] = 0;
+    }
     vec3 euler_nqs;
-    vec3 euler_oqs;
+    mat4 orientation;
     glm_quat_mat4(nqs->ori, orientation);
     glm_euler_angles(orientation, euler_nqs);
 
+    vec3 euler_oqs;
     glm_quat_mat4(oqs->ori, orientation);
     glm_euler_angles(orientation, euler_oqs);
-    for(unsigned int i = 0; i < 3; i++) {
-        out[i] =- K_P * euler_nqs[i] + K_D*(euler_oqs[i]-euler_nqs[i])/dt;
 
+
+
+    vec3 ocsigne;
+    vec3 ncsigne;
+
+
+
+
+    for(unsigned int i = 0; i < 3; i++) {
+        ncsigne[i] = X_K_P*-euler_nqs[i] + X_K_D*nqs->rot_filtered[i];
+        ocsigne[i] = X_K_P*-euler_oqs[i] + X_K_D*oqs->rot_filtered[i];
+        out[i] =   K_P * (ncsigne[i]-nqs->rot_filtered[i]) + K_D*((ncsigne[i]-nqs->rot_filtered[i])-(ocsigne[i]-oqs->rot_filtered[i]))/dt;
     }
 }
 
-void compute_moments(vec3 commands, vec3 moments) {
+void compute_moments(vec3 commands, vec3 moments, vec4 old_motor_value, double dt, vec4 new_motor_value) {
+    for(int i = 0; i  < 3 ; i++)
+        moments[i] = 0.0f;
 
+    vec4 motor_value;
     //    for (unsigned int i = 0; i < 3; i++)
     //        commands[i] = sat(commands[i], -10, 10);
-    vec4 motor_value;
-    float command_h = 0.0f;
+    float command_h = 0.35f;
+
+    motor_value[0] = (1 * commands[1]) + (1 * commands[0]) + ( 1 * commands[2]) + command_h;
     motor_value[1] = ( -1 * commands[1]) + (1 * commands[0]) + (-1 * commands[2]) + command_h;
     motor_value[2] = ( -1 * commands[1]) + (-1 * commands[0]) + ( 1 * commands[2]) + command_h;
     motor_value[3] = (1 * commands[1]) + ( -1 * commands[0]) + (-1 * commands[2]) + command_h;
-    motor_value[0] = (1 * commands[1]) + (1 * commands[0]) + ( 1 * commands[2]) + command_h;
+
+
+
     vec4 motor_force;
     const float proj = 0.70710678118f*0.25;
     vec3 origin_to_motor[4][3] = {
@@ -125,10 +160,18 @@ void compute_moments(vec3 commands, vec3 moments) {
         {proj, -proj, 0.0f},
         {-proj, -proj, 0.0f},
     };
+    vec4 temp;
     for(unsigned int i = 0; i < 4; i++) {
-        motor_value[i] = sat(motor_value[i], -0.5f, 0.5f);
-        //printf("%f\n", motor_value[i]);
+        motor_value[i] = sat(motor_value[i], 0.0f, 1.0f);
+        const float beta = exp(-2.0f*3.14f*25.0f*dt);
+
+        temp[i] = motor_value[i];
+        motor_value[i] = beta*old_motor_value[i] + (1.0f-beta)*motor_value[i];
+        old_motor_value[i] = temp[i];
+        new_motor_value[i] = motor_value[i];
+
         motor_force[i] = motor_value[i]*0.4500f*9.81f; // (450g max)
+//        printf("motor %d force is %f\n", i, motor_force[i]);
         vec3 force = {0.0f, 0.0f, 0.0f};
         force[2] = motor_force[i];
         vec3 moment;
@@ -137,7 +180,7 @@ void compute_moments(vec3 commands, vec3 moments) {
         glm_vec3_cross(origin_to_motor[i], force, moment);
         for(unsigned int j = 0; j < 3; j++)
             moments[j] += moment[j];
-
+        moments[0] += 10e-3f*9.81f*0.25f; // 10g à 25cm de perturbation (10e-3*9,81*0,25)
         //glmc_vec3_print(moment, stderr);
         // printf("---------\n");
     }
@@ -146,10 +189,16 @@ void compute_moments(vec3 commands, vec3 moments) {
 
 
 #define LENGTH 1
-#define STEPS 10000
+#define STEPS 5000
 #define SIM_LENGTH  (LENGTH*STEPS)
+#define N_SIMS 10e8
+typedef struct SimInfo {
+    float X_K_D;
+    float X_K_P;
+    float K_P;
+    float K_D;
+} SimInfo;
 int main() {
-    vec3 moments;
     /*
        moments[0] = 0;
        moments[1] = 0;
@@ -167,71 +216,119 @@ int main() {
 
     double Y3_s[SIM_LENGTH];
     double Y4_s[SIM_LENGTH];
-
-    qs_create(&states[0]);
-    qs_create(&states[1]);
+    double Y5_s[SIM_LENGTH];
+    double Y6_s[SIM_LENGTH];
+    double Y7_s[SIM_LENGTH];
     qc_create(&c);
+    float best_rms = 10000000.0f;
+    SimInfo best_coeffs;
+    for(unsigned long m_i = 0; m_i < N_SIMS; m_i++) {
+        if(m_i%100 == 0) {
+            X_K_D *= 1.01f;
+        } else if (m_i%100000 == 0) {
+            X_K_P *= 1.01f;
+        } else if (m_i%10000000 == 0) {
+            K_P *= 1.01f;
+        } else if (m_i%1000000000 == 0) {
+            K_D *= 1.01f;
+        }
 
-    X_s[0] = 0;
-    Y1_s[0] = 0;
-    Y2_s[0] = 0;
-    Y3_s[0] = 0;
-    Y4_s[0] = 0;
+        for(unsigned int i =0; i <SIM_LENGTH;i++) {
+            qs_create(&states[i]);
+
+            X_s[i] = 0;
+            Y1_s[i] = 0;
+            Y2_s[i] = 0;
+            Y3_s[i] = 0;
+            Y4_s[i] = 0;
+            Y5_s[i] = 0;
+            Y6_s[i] = 0;
+            Y7_s[i] = 0;
+        }
 
 
-    for(unsigned int i = 2; i < SIM_LENGTH ; i++) {
-        int s = i/STEPS;
-        printf("%i\n", s);
-
-        //glm_quat_normalize(states[i-1].ori);
         vec3 command;
-        compute_commands(&states[i-1], &states[i-2], dt, command);
+        double rms = 0.0f;
+        for(unsigned int i = 1000; i < SIM_LENGTH ; i++) {
+            int s = i/STEPS;
+          //  printf("%i\n", s);
 
-        vec3 moments;
-        compute_moments(command, moments);
+            //glm_quat_normalize(states[i-1].ori);
+            if(i%10==0) {
+                compute_commands(&states[i-LATENCY*10], &states[i-(LATENCY*10+11)], dt, command);
+            }
 
-        Forces f;
+            vec3 moments;
+            vec4 new_motor_speed;
+            compute_moments(command, moments, states[i-1].motor_speed, dt, new_motor_speed);
 
-        glm_vec3_copy(moments, f.moment);
+            Forces f;
 
-        states[i] = qs_iterate(states[i-1], f, c, dt);
-        float val = glm_quat_norm(states[i].ori);
-        float angle = glm_quat_angle(states[i].ori);
-        vec3 axis;
-        glm_quat_axis(states[i].ori, axis);
+            glm_vec3_copy(moments, f.moment);
 
-
-        mat4 orientation;
-        glm_quat_mat4(states[i].ori, orientation);
-        vec3 euler;
-        glm_euler_angles(orientation, euler);
-
-        printf("[Quat] Orientation (%f, %f, %f, %f) || ||=%f\n", states[i].ori[0], states[i].ori[1], states[i].ori[2], states[i].ori[3], val);
-
-        printf("[Vec3] Axe, angle (%f, %f, %f) angle=%f\n", axis[0], axis[1], axis[2], angle  );
-        printf("[Euler] Angles (%f, %f, %f)\n", euler[0], euler[1], euler[2]);
-        printf("[Vec3] Rotation (%f, %f, %f)\n", states[i].rot[0], states[i].rot[1], states[i].rot[2]  );
-
+            states[i] = qs_iterate(states[i-1], f, c, i, dt);
+            for(int j = 0; j < 4 ; j++)
+                states[i].motor_speed[j] = new_motor_speed[j];
+            float val = glm_quat_norm(states[i].ori);
+            float angle = glm_quat_angle(states[i].ori);
+            vec3 axis;
+            glm_quat_axis(states[i].ori, axis);
 
 
-        Y1_s[i] = euler[0]*500;
-        Y2_s[i] = euler[1]*500;
-        //Y3_s[i] = sat(command[0], -10, 10);
-        Y3_s[i] = moments[0];
-        Y4_s[i] = moments[1];
-        X_s[i] = i*dt;
+            mat4 orientation;
+            glm_quat_mat4(states[i].ori, orientation);
+            vec3 euler;
+            glm_euler_angles(orientation, euler);
+
+            rms += euler[0]*euler[0];
+
+
+            //printf("[Quat] Orientation (%f, %f, %f, %f) || ||=%f\n", states[i].ori[0], states[i].ori[1], states[i].ori[2], states[i].ori[3], val);
+
+            //printf("[Vec3] Axe, angle (%f, %f, %f) angle=%f\n", axis[0], axis[1], axis[2], angle  );
+            //printf("[Euler] Angles (%f, %f, %f)\n", euler[0], euler[1], euler[2]);
+            //printf("[Vec3] Rotation (%f, %f, %f)\n", states[i].rot[0], states[i].rot[1], states[i].rot[2]  );
+
+
+
+            /*   Y1_s[i] = -X_K_P*euler[0];
+                 Y2_s[i] = states[i].rot_noised[0];
+                 Y3_s[i] = states[i].rot_filtered[0]; //-X_K_P*euler[0];
+                 Y4_s[i] = states[i].motor_speed[0];
+                 Y5_s[i] = states[i-1].motor_speed[0];
+                 Y6_s[i] = states[i].motor_speed[2];
+                 Y7_s[i] = states[i-1].motor_speed[2];
+                 X_s[i] = i*dt;
+                 */
+        }
+        rms /= SIM_LENGTH;
+        if(rms < best_rms) {
+            best_rms = rms;
+            best_coeffs = (SimInfo) {
+                X_K_P,
+                X_K_D,
+                K_P,
+                K_D
+            };
+        }
+        printf("%d\t%lf\n", m_i, rms);
+
+        /*
+           gnuplot_ctrl * h ;
+           h = gnuplot_init() ;
+        //    gnuplot_cmd(h, "set multiplot layout 2,1 rowsfirst");
+        gnuplot_plot_xy(h, X_s, Y1_s, SIM_LENGTH, "euler X") ;
+        gnuplot_plot_xy(h, X_s, Y2_s, SIM_LENGTH, "rot noised X") ;
+        gnuplot_plot_xy(h, X_s, Y3_s, SIM_LENGTH, "rot filtered X ") ;
+        gnuplot_plot_xy(h, X_s, Y4_s, SIM_LENGTH, "motor 0") ;
+        gnuplot_plot_xy(h, X_s, Y5_s, SIM_LENGTH, "motor 0 noised") ;
+        gnuplot_plot_xy(h, X_s, Y6_s, SIM_LENGTH, "motor 2") ;
+        gnuplot_plot_xy(h, X_s, Y7_s, SIM_LENGTH, "motor 2 noised") ;
+        sleep(1000);
+
+        gnuplot_close(h) ;
+        */
     }
-
-
-    gnuplot_ctrl * h ;
-    h = gnuplot_init() ;
-    //    gnuplot_cmd(h, "set multiplot layout 2,1 rowsfirst");
-    gnuplot_plot_xy(h, X_s, Y1_s, SIM_LENGTH, "euler X") ;
-    gnuplot_plot_xy(h, X_s, Y2_s, SIM_LENGTH, "euler Y") ;
-    gnuplot_plot_xy(h, X_s, Y3_s, SIM_LENGTH, "cmd X") ;
-    gnuplot_plot_xy(h, X_s, Y4_s, SIM_LENGTH, "cmd Y") ;
-    sleep(1000);
-
-    gnuplot_close(h) ;
+    printf("%f\t%f\t%f\t%f\n", best_coeffs.X_K_P, best_coeffs.X_K_D, best_coeffs.K_P, best_coeffs.K_D);
     return 0;
 }
